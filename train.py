@@ -22,7 +22,9 @@ from __future__ import print_function
 import matplotlib
 import numpy as np
 import tensorflow as tf
-import Tkinter  # pylint: disable=unused-import
+import tkinter  # pylint: disable=unused-import
+import scipy.io
+import os
 
 matplotlib.use('Agg')
 
@@ -32,11 +34,19 @@ import scores  # pylint: disable=g-bad-import-order
 import utils  # pylint: disable=g-bad-import-order
 
 
+def del_all_flags(FLAGS):
+    flags_dict = FLAGS._flags()
+    keys_list = [keys for keys in flags_dict]
+    for keys in keys_list:
+        FLAGS.__delattr__(keys)
+        
+del_all_flags(tf.flags.FLAGS)
+
 # Task config
 tf.flags.DEFINE_string('task_dataset_info', 'square_room',
                        'Name of the room in which the experiment is performed.')
 tf.flags.DEFINE_string('task_root',
-                       None,
+                       'F:\LocalLabData\GridCells\grid-cells-datasets',
                        'Dataset path.')
 tf.flags.DEFINE_float('task_env_size', 2.2,
                       'Environment size (meters).')
@@ -46,6 +56,8 @@ tf.flags.DEFINE_list('task_pc_scale', [0.01],
                      'Place cell standard deviation parameter (meters).')
 tf.flags.DEFINE_list('task_n_hdc', [12],
                      'Number of target head direction cells.')
+tf.flags.DEFINE_float('task_hdc_lambda', 1,
+                     'Weight of head direction cell loss.')
 tf.flags.DEFINE_list('task_hdc_concentration', [20.],
                      'Head direction concentration parameter.')
 tf.flags.DEFINE_integer('task_neurons_seed', 8341,
@@ -93,7 +105,7 @@ tf.flags.DEFINE_string('training_optimizer_options',
 
 # Store
 tf.flags.DEFINE_string('saver_results_directory',
-                       None,
+                       'F:\LocalLabData\GridCells\Results\Baseline',
                        'Path to directory for saving results.')
 tf.flags.DEFINE_integer('saver_eval_time', 2,
                         'Frequency at which results are saved.')
@@ -172,7 +184,7 @@ def train():
       labels=ensembles_targets[0], logits=ensembles_logits[0], name='pc_loss')
   hd_loss = tf.nn.softmax_cross_entropy_with_logits_v2(
       labels=ensembles_targets[1], logits=ensembles_logits[1], name='hd_loss')
-  total_loss = pc_loss + hd_loss
+  total_loss = pc_loss + tf.math.scalar_mul(FLAGS.task_hdc_lambda, hd_loss)
   train_loss = tf.reduce_mean(total_loss, name='train_loss')
 
   # Optimisation ops
@@ -201,6 +213,9 @@ def train():
   latest_epoch_scorer = scores.GridScorer(20, data_reader.get_coord_range(),
                                           masks_parameters)
 
+  if not os.path.isdir('{}/data'.format(FLAGS.saver_results_directory)):
+      os.makedirs('{}/data'.format(FLAGS.saver_results_directory))
+
   with tf.train.SingularMonitoredSession() as sess:
     for epoch in range(FLAGS.training_epochs):
       loss_acc = list()
@@ -212,7 +227,7 @@ def train():
                       np.mean(loss_acc), np.std(loss_acc))
       if epoch % FLAGS.saver_eval_time == 0:
         res = dict()
-        for _ in xrange(FLAGS.training_evaluation_minibatch_size //
+        for _ in range(FLAGS.training_evaluation_minibatch_size //
                         FLAGS.training_minibatch_size):
           mb_res = sess.run({
               'bottleneck': bottleneck,
@@ -220,9 +235,11 @@ def train():
               'pos_xy': target_pos
           })
           res = utils.concat_dict(res, mb_res)
-
+          
+        filename = '{}/data/result_{}.mat'.format(FLAGS.saver_results_directory,epoch)
+        scipy.io.savemat(filename, mdict=res)
         # Store at the end of validation
-        filename = 'rates_and_sac_latest_hd.pdf'
+        filename = 'rates_and_sac_latest_hd_{}.pdf'.format(epoch)
         grid_scores['btln_60'], grid_scores['btln_90'], grid_scores[
             'btln_60_separation'], grid_scores[
                 'btln_90_separation'] = utils.get_scores_and_plot(
